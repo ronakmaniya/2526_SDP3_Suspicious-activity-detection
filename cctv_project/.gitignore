@@ -1,0 +1,72 @@
+# =====================
+# OS / Editor
+# =====================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =====================
+# Python
+# =====================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+.env/
+
+# Jupyter / tooling
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# =====================
+# Node / React (cctv-frontend)
+# =====================
+node_modules/
+
+# Build outputs
+build/
+dist/
+
+# npm/yarn/pnpm caches
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =====================
+# Data / outputs (common for CCTV video datasets)
+# =====================
+# Raw datasets (videos/images)
+data/
+datasets/
+
+# Extracted frames (if you use extract_frames.py output folder names)
+*_frames/
+frames/
+extracted_frames/
+
+# Model checkpoints / training artifacts
+runs/
+checkpoints/
+weights/
+*.pt
+*.pth
+*.onnx
+
+# Local secrets
+*.key
+*.pem
