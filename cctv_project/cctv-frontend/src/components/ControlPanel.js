@@ -1,7 +1,17 @@
 import React from 'react';
 import './ControlPanel.css';
 
-function ControlPanel({ isStreaming, onStart, onStop, onReset }) {
+function ControlPanel({
+  isStreaming,
+  onStart,
+  onStop,
+  onReset,
+  isRecording,
+  recordingUploadState,
+  recordingUploadError,
+  onStartRecording,
+  onStopRecording
+}) {
   return (
     <div className="control-panel">
       <button 
@@ -26,6 +36,23 @@ function ControlPanel({ isStreaming, onStart, onStop, onReset }) {
         </svg>
         <span>Stop Camera</span>
       </button>
+
+      <button
+        className={`control-btn record ${(!isStreaming || recordingUploadState === 'uploading') ? 'disabled' : ''}`}
+        onClick={isRecording ? onStopRecording : onStartRecording}
+        disabled={!isStreaming || recordingUploadState === 'uploading'}
+        title={recordingUploadState === 'uploading' ? 'Uploading…' : ''}
+      >
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2" />
+          <circle cx="12" cy="12" r="3" fill="currentColor" />
+        </svg>
+        <span>
+          {isRecording
+            ? 'Stop Recording'
+            : (recordingUploadState === 'uploading' ? 'Uploading…' : 'Start Recording')}
+        </span>
+      </button>
       
       <button 
         className="control-btn reset"
@@ -36,6 +63,14 @@ function ControlPanel({ isStreaming, onStart, onStop, onReset }) {
         </svg>
         <span>Reset</span>
       </button>
+
+      {recordingUploadState === 'error' && (
+        <div className="recording-status error">{recordingUploadError || 'Recording upload failed.'}</div>
+      )}
+
+      {recordingUploadState === 'uploaded' && (
+        <div className="recording-status success">Recording saved to backend.</div>
+      )}
     </div>
   );
 }

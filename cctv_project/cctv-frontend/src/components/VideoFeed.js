@@ -1,7 +1,7 @@
 import React from 'react';
 import './VideoFeed.css';
 
-function VideoFeed({ videoRef, isStreaming, detections, activityStatus }) {
+function VideoFeed({ videoRef, recordingCanvasRef, isStreaming, isRecording, detections, activityStatus }) {
   return (
     <div className={`video-container ${activityStatus}`}>
       <div className="video-wrapper">
@@ -25,6 +25,8 @@ function VideoFeed({ videoRef, isStreaming, detections, activityStatus }) {
           muted
           className={isStreaming ? 'active' : ''}
         />
+
+        <canvas ref={recordingCanvasRef} className="recording-canvas" />
         
         {/* Detection Bounding Boxes */}
         {isStreaming && detections.map(detection => (
@@ -56,7 +58,7 @@ function VideoFeed({ videoRef, isStreaming, detections, activityStatus }) {
         )}
         
         {/* Recording Indicator */}
-        {isStreaming && (
+        {isStreaming && isRecording && (
           <div className="recording-badge">
             <span className="rec-dot"></span>
             REC

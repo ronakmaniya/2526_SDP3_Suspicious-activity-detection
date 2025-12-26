@@ -73,6 +73,33 @@
   transform: translateY(-2px);
 }
 
+/* Record Button */
+.control-btn.record {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
+}
+
+.control-btn.record:hover:not(.disabled) {
+  box-shadow: 0 6px 25px rgba(239, 68, 68, 0.4);
+  transform: translateY(-2px);
+}
+
+.recording-status {
+  flex-basis: 100%;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.recording-status.error {
+  color: #ef4444;
+}
+
+.recording-status.success {
+  color: #22c55e;
+}
+
 /* Reset Button */
 .control-btn.reset {
   background: linear-gradient(135deg, #6366f1, #4f46e5);
