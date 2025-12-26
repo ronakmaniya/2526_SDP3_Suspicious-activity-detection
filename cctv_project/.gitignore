@@ -36,7 +36,7 @@ ENV/
 # Node / React (cctv-frontend)
 # =====================
 node_modules/
-fine_tuning/
+model_training/
 # Build outputs
 build/
 dist/
