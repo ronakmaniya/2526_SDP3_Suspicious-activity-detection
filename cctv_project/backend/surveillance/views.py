@@ -70,7 +70,10 @@ class RecordingUploadView(APIView):
         recordings_dir.mkdir(parents=True, exist_ok=True)
 
         ts = time.strftime('%Y%m%d_%H%M%S')
-        original_name = get_valid_filename(getattr(uploaded, 'name', 'recording.webm'))
+        original_name = get_valid_filename(getattr(uploaded, 'name', 'recording.mp4'))
+        # Ensure proper extension
+        if not original_name.endswith(('.mp4', '.webm')):
+            original_name = original_name + '.mp4'
         base_name = f"recording_{ts}_{original_name}"
         out_path = recordings_dir / base_name
 
@@ -116,3 +119,32 @@ class RecordingListView(APIView):
             )
 
         return Response({'recordings': items})
+
+
+class DetectHumansView(APIView):
+    """YOLO-based human detection endpoint.
+    
+    Receives a base64 encoded image and returns bounding boxes for detected humans.
+    """
+    
+    def post(self, request):
+        image_data = request.data.get('image')
+        if not image_data:
+            return Response({'error': 'Missing image data'}, status=400)
+        
+        confidence = float(request.data.get('confidence', 0.5))
+        
+        try:
+            from .yolo_detector import detect_humans
+            detections = detect_humans(image_data, confidence_threshold=confidence)
+            return Response({
+                'success': True,
+                'detections': detections,
+                'count': len(detections)
+            })
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+                'detections': []
+            }, status=500)

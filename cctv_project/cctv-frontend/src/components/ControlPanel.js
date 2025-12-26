@@ -8,9 +8,7 @@ function ControlPanel({
   onReset,
   isRecording,
   recordingUploadState,
-  recordingUploadError,
-  onStartRecording,
-  onStopRecording
+  recordingUploadError
 }) {
   return (
     <div className="control-panel">
@@ -37,23 +35,6 @@ function ControlPanel({
         <span>Stop Camera</span>
       </button>
 
-      <button
-        className={`control-btn record ${(!isStreaming || recordingUploadState === 'uploading') ? 'disabled' : ''}`}
-        onClick={isRecording ? onStopRecording : onStartRecording}
-        disabled={!isStreaming || recordingUploadState === 'uploading'}
-        title={recordingUploadState === 'uploading' ? 'Uploading…' : ''}
-      >
-        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2" />
-          <circle cx="12" cy="12" r="3" fill="currentColor" />
-        </svg>
-        <span>
-          {isRecording
-            ? 'Stop Recording'
-            : (recordingUploadState === 'uploading' ? 'Uploading…' : 'Start Recording')}
-        </span>
-      </button>
-      
       <button 
         className="control-btn reset"
         onClick={onReset}
@@ -64,12 +45,21 @@ function ControlPanel({
         <span>Reset</span>
       </button>
 
+      {/* Recording status indicators */}
+      {isRecording && (
+        <div className="recording-status recording">🔴 Recording in progress...</div>
+      )}
+
+      {recordingUploadState === 'uploading' && (
+        <div className="recording-status uploading">⏳ Uploading recording...</div>
+      )}
+
       {recordingUploadState === 'error' && (
         <div className="recording-status error">{recordingUploadError || 'Recording upload failed.'}</div>
       )}
 
       {recordingUploadState === 'uploaded' && (
-        <div className="recording-status success">Recording saved to backend.</div>
+        <div className="recording-status success">✅ Recording saved successfully!</div>
       )}
     </div>
   );

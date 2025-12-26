@@ -6,7 +6,7 @@ import StatusIndicator from './components/StatusIndicator';
 import ControlPanel from './components/ControlPanel';
 import AlertDisplay from './components/AlertDisplay';
 import StatsPanel from './components/StatsPanel';
-import { apiGetState, apiSessionReset, apiSessionStart, apiSessionStop, apiUploadRecording } from './api';
+import { apiGetState, apiSessionReset, apiSessionStart, apiSessionStop, apiUploadRecording, apiDetectHumans } from './api';
 
 function App() {
   const [isStreaming, setIsStreaming] = useState(false);
@@ -24,27 +24,114 @@ function App() {
   const streamRef = useRef(null);
   const intervalRef = useRef(null);
   const isFetchingRef = useRef(false);
+  const detectionIntervalRef = useRef(null);
+  const detectionCanvasRef = useRef(null);
 
   const recordingCanvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const mediaRecorderChunksRef = useRef([]);
   const drawRafRef = useRef(null);
   const recordingStartedAtMsRef = useRef(null);
+  const startRecordingRef = useRef(null);
+  const detectionsRef = useRef([]);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordingUploadState, setRecordingUploadState] = useState('idle'); // idle | uploading | uploaded | error
   const [recordingUploadError, setRecordingUploadError] = useState(null);
+
+  // Capture frame from video and send to YOLO detection
+  const captureAndDetect = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || !video.srcObject) return;
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    console.log('Capturing frame for detection...', video.videoWidth, 'x', video.videoHeight);
+
+    // Create or reuse canvas for frame capture
+    if (!detectionCanvasRef.current) {
+      detectionCanvasRef.current = document.createElement('canvas');
+    }
+    const canvas = detectionCanvasRef.current;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+    
+    // Convert to base64
+    const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
+    console.log('Sending frame to backend, size:', imageBase64.length);
+    
+    try {
+      const result = await apiDetectHumans(imageBase64, 0.5);
+      console.log('Detection result:', result);
+      if (result.success && result.detections) {
+        // Analyze detections for suspicious activity
+        // Suspicious criteria: multiple people, unusual positions, rapid movements
+        const detectionsWithStatus = result.detections.map((det, idx) => {
+          // Simple suspicious activity detection logic:
+          // - More than 3 people detected = suspicious
+          // - Person at edge of frame (possible intrusion) = suspicious
+          // - Very high confidence rapid detection = suspicious
+          let status = 'normal';
+          
+          const isAtEdge = det.x < 5 || det.x + det.width > 95 || det.y < 5;
+          const multiplePeople = result.detections.length > 3;
+          const largePresence = det.width > 40 || det.height > 60;
+          
+          if (multiplePeople || (isAtEdge && det.confidence > 70) || largePresence) {
+            status = 'suspicious';
+          }
+          
+          return { ...det, status };
+        });
+        
+        setDetections(detectionsWithStatus);
+        detectionsRef.current = detectionsWithStatus;
+        
+        // Check if any detection is suspicious
+        const hasSuspicious = detectionsWithStatus.some(d => d.status === 'suspicious');
+        
+        // Update stats
+        setStats(prev => ({
+          ...prev,
+          totalDetections: prev.totalDetections + detectionsWithStatus.length,
+          normalCount: prev.normalCount + detectionsWithStatus.filter(d => d.status === 'normal').length,
+          suspiciousCount: prev.suspiciousCount + detectionsWithStatus.filter(d => d.status === 'suspicious').length
+        }));
+        
+        // Set activity status based on detections
+        if (detectionsWithStatus.length > 0) {
+          setActivityStatus(hasSuspicious ? 'suspicious' : 'normal');
+          
+          // Create alert for suspicious activity
+          if (hasSuspicious) {
+            const newAlert = {
+              id: `alert_${Date.now()}`,
+              message: `Suspicious activity detected - ${detectionsWithStatus.filter(d => d.status === 'suspicious').length} person(s)`,
+              time: new Date().toLocaleTimeString(),
+              confidence: Math.round(detectionsWithStatus.filter(d => d.status === 'suspicious')[0]?.confidence || 0)
+            };
+            setAlerts(prev => [newAlert, ...prev].slice(0, 50));
+          }
+        } else {
+          setActivityStatus('idle');
+        }
+      }
+    } catch (error) {
+      console.error('Detection error:', error);
+    }
+  }, [isStreaming]);
 
   const fetchBackendState = useCallback(async () => {
     if (!isStreaming || isFetchingRef.current) return;
     isFetchingRef.current = true;
     try {
       const state = await apiGetState();
-      setActivityStatus(state.activityStatus || 'idle');
-      setDetections(Array.isArray(state.detections) ? state.detections : []);
+      // Only update alerts from backend, detections come from YOLO
       setAlerts(Array.isArray(state.alerts) ? state.alerts : []);
-      if (state.stats) {
-        setStats(state.stats);
+      if (state.stats?.uptime) {
+        setStats(prev => ({ ...prev, uptime: state.stats.uptime }));
       }
     } catch (error) {
       console.error('Backend state fetch error:', error);
@@ -144,6 +231,44 @@ function App() {
       ctx.strokeText(elapsedText, padding, padding + fontSize + 8);
       ctx.fillText(elapsedText, padding, padding + fontSize + 8);
 
+      // Draw detection boxes on recording
+      const currentDetections = detectionsRef.current || [];
+      currentDetections.forEach(det => {
+        const boxX = (det.x / 100) * canvasEl.width;
+        const boxY = (det.y / 100) * canvasEl.height;
+        const boxW = (det.width / 100) * canvasEl.width;
+        const boxH = (det.height / 100) * canvasEl.height;
+        
+        // Set color based on status
+        const isNormal = det.status === 'normal';
+        const boxColor = isNormal ? '#22c55e' : '#ef4444'; // Green for normal, Red for suspicious
+        const bgColor = isNormal ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)';
+        
+        // Draw box background
+        ctx.fillStyle = bgColor;
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        
+        // Draw box border
+        ctx.strokeStyle = boxColor;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+        
+        // Draw label background
+        const labelText = isNormal ? `✓ Normal ${det.confidence}%` : `⚠ Suspicious ${det.confidence}%`;
+        const labelFontSize = Math.max(14, Math.floor(canvasEl.width * 0.015));
+        ctx.font = `bold ${labelFontSize}px Arial`;
+        const labelWidth = ctx.measureText(labelText).width + 12;
+        const labelHeight = labelFontSize + 8;
+        
+        ctx.fillStyle = boxColor;
+        ctx.fillRect(boxX, boxY - labelHeight - 2, labelWidth, labelHeight);
+        
+        // Draw label text
+        ctx.fillStyle = 'white';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(labelText, boxX + 6, boxY - labelHeight/2 - 2);
+      });
+
       drawRafRef.current = requestAnimationFrame(draw);
     };
 
@@ -153,6 +278,9 @@ function App() {
 
   const pickRecorderMimeType = () => {
     const candidates = [
+      'video/mp4;codecs=avc1',
+      'video/mp4;codecs=h264',
+      'video/mp4',
       'video/webm;codecs=vp9',
       'video/webm;codecs=vp8',
       'video/webm'
@@ -263,6 +391,11 @@ function App() {
     console.log('Recording started, recorder state:', recorder.state, 'canvas:', canvasEl.width, 'x', canvasEl.height);
   }, [isStreaming, isRecording, startDrawingOverlay]);
 
+  // Keep startRecordingRef in sync with the latest startRecording function
+  useEffect(() => {
+    startRecordingRef.current = startRecording;
+  }, [startRecording]);
+
   const stopRecording = useCallback(() => {
     if (!isRecording) return;
     console.log('Stopping recording, chunks collected:', mediaRecorderChunksRef.current.length);
@@ -306,9 +439,20 @@ function App() {
         }
 
         setIsStreaming(true);
-        // Let backend drive status/detections/alerts/stats
+        // Let backend drive alerts/uptime
         intervalRef.current = setInterval(fetchBackendState, 2000);
         fetchBackendState();
+
+        // Start YOLO human detection every 500ms
+        detectionIntervalRef.current = setInterval(() => {
+          captureAndDetect();
+        }, 500);
+
+        // Auto-start recording when camera starts
+        // Small delay to ensure video is ready
+        setTimeout(() => {
+          startRecordingRef.current?.();
+        }, 500);
       }
     } catch (error) {
       console.error('Camera access error:', error);
@@ -320,6 +464,11 @@ function App() {
   const stopCamera = async () => {
     if (isRecording) {
       stopRecording();
+    }
+    // Stop detection interval
+    if (detectionIntervalRef.current) {
+      clearInterval(detectionIntervalRef.current);
+      detectionIntervalRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
@@ -432,14 +581,12 @@ function App() {
               isRecording={isRecording}
               recordingUploadState={recordingUploadState}
               recordingUploadError={recordingUploadError}
-              onStartRecording={startRecording}
-              onStopRecording={stopRecording}
             />
           </div>
           
           <div className="side-panel">
             <StatsPanel stats={stats} isStreaming={isStreaming} />
-            <AlertDisplay alerts={alerts} onDismiss={dismissAlert} />
+            <AlertDisplay alerts={alerts} onDismiss={dismissAlert} onClearAll={() => setAlerts([])} />
           </div>
         </div>
       </main>

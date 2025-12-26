@@ -171,6 +171,20 @@
   color: white;
 }
 
+.detection-box.human {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.15);
+  box-shadow: 
+    0 0 20px rgba(59, 130, 246, 0.3),
+    inset 0 0 15px rgba(59, 130, 246, 0.1);
+  animation: boxAppear 0.3s ease-out;
+}
+
+.detection-box.human .detection-label {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: white;
+}
+
 .confidence {
   background: rgba(0, 0, 0, 0.3);
   padding: 2px 6px;

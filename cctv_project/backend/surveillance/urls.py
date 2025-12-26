@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    DetectHumansView,
     HealthView,
     RecordingListView,
     RecordingUploadView,
@@ -19,4 +20,6 @@ urlpatterns = [
 
     path('recordings/', RecordingListView.as_view(), name='recording-list'),
     path('recordings/upload/', RecordingUploadView.as_view(), name='recording-upload'),
+    
+    path('detect/', DetectHumansView.as_view(), name='detect-humans'),
 ]

@@ -41,7 +41,10 @@ export function apiGetState() {
 
 export async function apiUploadRecording(fileBlob, { startedAt, endedAt } = {}) {
   const formData = new FormData();
-  formData.append('file', fileBlob, `recording_${Date.now()}.webm`);
+  // Determine file extension based on blob type
+  const isMP4 = fileBlob.type && fileBlob.type.includes('mp4');
+  const ext = isMP4 ? 'mp4' : 'webm';
+  formData.append('file', fileBlob, `recording_${Date.now()}.${ext}`);
   if (startedAt) formData.append('startedAt', startedAt);
   if (endedAt) formData.append('endedAt', endedAt);
 
@@ -59,4 +62,23 @@ export async function apiUploadRecording(fileBlob, { startedAt, endedAt } = {}) 
 
 export function apiListRecordings() {
   return request('/api/recordings/');
+}
+
+export async function apiDetectHumans(imageBase64, confidence = 0.5) {
+  const res = await fetch(`${API_BASE_URL}/api/detect/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      image: imageBase64,
+      confidence: confidence
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Detection failed ${res.status}: ${text}`);
+  }
+  return res.json();
 }

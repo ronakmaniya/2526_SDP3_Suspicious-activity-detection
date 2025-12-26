@@ -41,7 +41,7 @@ function VideoFeed({ videoRef, recordingCanvasRef, isStreaming, isRecording, det
             }}
           >
             <span className="detection-label">
-              {detection.status === 'suspicious' ? '⚠️ Suspicious' : '✓ Normal'} 
+              {detection.status === 'suspicious' ? '⚠️ Suspicious' : '✓ Normal'}
               <span className="confidence">{detection.confidence}%</span>
             </span>
           </div>

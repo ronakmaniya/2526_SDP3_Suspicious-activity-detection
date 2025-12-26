@@ -1,7 +1,7 @@
 import React from 'react';
 import './AlertDisplay.css';
 
-function AlertDisplay({ alerts, onDismiss }) {
+function AlertDisplay({ alerts, onDismiss, onClearAll }) {
   return (
     <div className="alert-panel">
       <div className="panel-header">
@@ -11,7 +11,14 @@ function AlertDisplay({ alerts, onDismiss }) {
           </svg>
           Alert History
         </h3>
-        <span className="alert-count">{alerts.length}</span>
+        <div className="header-actions">
+          {alerts.length > 0 && (
+            <button className="clear-all-btn" onClick={onClearAll} title="Clear all alerts">
+              Clear All
+            </button>
+          )}
+          <span className="alert-count">{alerts.length}</span>
+        </div>
       </div>
       
       <div className="alerts-list">
