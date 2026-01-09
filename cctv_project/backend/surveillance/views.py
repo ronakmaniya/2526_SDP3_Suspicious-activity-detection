@@ -107,7 +107,9 @@ class RecordingListView(APIView):
         recordings_dir.mkdir(parents=True, exist_ok=True)
 
         items = []
-        for p in sorted(recordings_dir.glob('*.webm'), key=lambda x: x.stat().st_mtime, reverse=True):
+        # Find both .webm and .mp4 files
+        video_files = list(recordings_dir.glob('*.webm')) + list(recordings_dir.glob('*.mp4'))
+        for p in sorted(video_files, key=lambda x: x.stat().st_mtime, reverse=True):
             rel_path = p.relative_to(settings.MEDIA_ROOT).as_posix()
             items.append(
                 {
@@ -148,3 +150,40 @@ class DetectHumansView(APIView):
                 'error': str(e),
                 'detections': []
             }, status=500)
+
+
+class ClassifyActivityView(APIView):
+    """VideoMAE-based activity classification endpoint.
+
+    Expects JSON:
+      { "frames": ["data:image/jpeg;base64,...", ...] }
+
+    Returns:
+      { "success": true, "prediction": "normal|suspicious", "confidence": 0..100, "probabilities": {...} }
+    """
+
+    def post(self, request):
+        frames = request.data.get('frames')
+        if not isinstance(frames, list) or len(frames) == 0:
+            return Response({'error': 'Missing frames list'}, status=400)
+
+        num_frames = int(request.data.get('numFrames', 16))
+
+        try:
+            from .videomae_classifier import classify_activity
+
+            result = classify_activity(
+                frames,
+                num_frames=num_frames,
+                model_dir=getattr(settings, 'VIDEOMAE_MODEL_DIR', None),
+            )
+            return Response(
+                {
+                    'success': True,
+                    'prediction': result.prediction,
+                    'confidence': round(result.confidence, 2),
+                    'probabilities': {k: round(v, 2) for k, v in result.probabilities.items()},
+                }
+            )
+        except Exception as e:
+            return Response({'success': False, 'error': str(e)}, status=500)

@@ -6,7 +6,7 @@ import StatusIndicator from './components/StatusIndicator';
 import ControlPanel from './components/ControlPanel';
 import AlertDisplay from './components/AlertDisplay';
 import StatsPanel from './components/StatsPanel';
-import { apiGetState, apiSessionReset, apiSessionStart, apiSessionStop, apiUploadRecording, apiDetectHumans } from './api';
+import { apiGetState, apiSessionReset, apiSessionStart, apiSessionStop, apiUploadRecording, apiDetectHumans, apiClassifyActivity } from './api';
 
 function App() {
   const [isStreaming, setIsStreaming] = useState(false);
@@ -26,6 +26,9 @@ function App() {
   const isFetchingRef = useRef(false);
   const detectionIntervalRef = useRef(null);
   const detectionCanvasRef = useRef(null);
+  const frameBufferRef = useRef([]);
+  const lastClassifyAtMsRef = useRef(0);
+  const activityModelRef = useRef({ prediction: null, confidence: 0 });
 
   const recordingCanvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -40,12 +43,21 @@ function App() {
   const [recordingUploadError, setRecordingUploadError] = useState(null);
 
   // Capture frame from video and send to YOLO detection
+  // Lock to prevent concurrent detection calls
+  const detectionInProgressRef = useRef(false);
+
   const captureAndDetect = useCallback(async () => {
     const video = videoRef.current;
     if (!video || !video.srcObject) return;
     if (video.videoWidth === 0 || video.videoHeight === 0) return;
+    
+    // Skip if detection is already in progress (prevents buildup)
+    if (detectionInProgressRef.current) {
+      return;
+    }
+    detectionInProgressRef.current = true;
 
-    console.log('Capturing frame for detection...', video.videoWidth, 'x', video.videoHeight);
+    // console.log('Capturing frame for detection...', video.videoWidth, 'x', video.videoHeight);
 
     // Create or reuse canvas for frame capture
     if (!detectionCanvasRef.current) {
@@ -58,33 +70,50 @@ function App() {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
     
-    // Convert to base64
-    const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
-    console.log('Sending frame to backend, size:', imageBase64.length);
+    // Convert to base64 (use lower quality for faster transfer)
+    const imageBase64 = canvas.toDataURL('image/jpeg', 0.7);
+
+    // Maintain a short buffer of frames for VideoMAE classification.
+    // We keep the last ~32 frames and classify using the last 16.
+    const buf = frameBufferRef.current;
+    buf.push(imageBase64);
+    if (buf.length > 32) buf.splice(0, buf.length - 32);
+
+    // Run classification every ~2 seconds once we have enough frames.
+    const nowMs = Date.now();
+    if (buf.length >= 16 && nowMs - lastClassifyAtMsRef.current >= 2000) {
+      lastClassifyAtMsRef.current = nowMs;
+      try {
+        const classifyRes = await apiClassifyActivity(buf.slice(-16), 16);
+        if (classifyRes?.success && classifyRes?.prediction) {
+          activityModelRef.current = {
+            prediction: classifyRes.prediction,
+            confidence: Number(classifyRes.confidence || 0)
+          };
+        }
+      } catch (e) {
+        // If classification fails (missing deps/model), keep YOLO-only behavior.
+        console.warn('Classification error:', e);
+      }
+    }
     
     try {
-      const result = await apiDetectHumans(imageBase64, 0.5);
-      console.log('Detection result:', result);
-      if (result.success && result.detections) {
-        // Analyze detections for suspicious activity
-        // Suspicious criteria: multiple people, unusual positions, rapid movements
-        const detectionsWithStatus = result.detections.map((det, idx) => {
-          // Simple suspicious activity detection logic:
-          // - More than 3 people detected = suspicious
-          // - Person at edge of frame (possible intrusion) = suspicious
-          // - Very high confidence rapid detection = suspicious
-          let status = 'normal';
-          
-          const isAtEdge = det.x < 5 || det.x + det.width > 95 || det.y < 5;
-          const multiplePeople = result.detections.length > 3;
-          const largePresence = det.width > 40 || det.height > 60;
-          
-          if (multiplePeople || (isAtEdge && det.confidence > 70) || largePresence) {
-            status = 'suspicious';
-          }
-          
-          return { ...det, status };
-        });
+      // Use low confidence (0.2) to detect more humans with good accuracy
+      const result = await apiDetectHumans(imageBase64, 0.2);
+      
+      if (result.success && result.detections && result.detections.length > 0) {
+        // Use the fine-tuned VideoMAE prediction (if available) to color boxes.
+        // If not available yet, fall back to normal.
+        // Require 70% confidence to use model prediction to reduce false positives
+        const modelPred = activityModelRef.current?.prediction;
+        const modelConf = Number(activityModelRef.current?.confidence || 0);
+        const useModel = (modelPred === 'normal' || modelPred === 'suspicious') && modelConf >= 70;
+        const statusFromModel = useModel ? modelPred : 'normal';
+        
+        const detectionsWithStatus = result.detections.map((det) => ({
+          ...det,
+          status: statusFromModel
+        }));
         
         setDetections(detectionsWithStatus);
         detectionsRef.current = detectionsWithStatus;
@@ -120,8 +149,10 @@ function App() {
       }
     } catch (error) {
       console.error('Detection error:', error);
+    } finally {
+      detectionInProgressRef.current = false;
     }
-  }, [isStreaming]);
+  }, []);
 
   const fetchBackendState = useCallback(async () => {
     if (!isStreaming || isFetchingRef.current) return;
@@ -443,10 +474,10 @@ function App() {
         intervalRef.current = setInterval(fetchBackendState, 2000);
         fetchBackendState();
 
-        // Start YOLO human detection every 500ms
+        // Start YOLO human detection every 300ms for smoother detection
         detectionIntervalRef.current = setInterval(() => {
           captureAndDetect();
-        }, 500);
+        }, 300);
 
         // Auto-start recording when camera starts
         // Small delay to ensure video is ready
@@ -462,24 +493,70 @@ function App() {
 
   // Stop camera stream
   const stopCamera = async () => {
-    if (isRecording) {
-      stopRecording();
-    }
-    // Stop detection interval
+    console.log('Stopping camera...');
+    
+    // First stop detection to prevent new frames being processed
     if (detectionIntervalRef.current) {
       clearInterval(detectionIntervalRef.current);
       detectionIntervalRef.current = null;
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    detectionInProgressRef.current = false;
+    
+    // Stop backend state polling
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
+    }
+    
+    // Stop recording and wait for upload to complete
+    if (isRecording && mediaRecorderRef.current) {
+      console.log('Stopping recording before camera stop...');
+      const recorder = mediaRecorderRef.current;
+      
+      // Create a promise that resolves when recording is done
+      await new Promise((resolve) => {
+        const originalOnStop = recorder.onstop;
+        recorder.onstop = async (e) => {
+          if (originalOnStop) {
+            await originalOnStop(e);
+          }
+          resolve();
+        };
+        
+        setIsRecording(false);
+        stopDrawingOverlay();
+        recordingStartedAtMsRef.current = null;
+        
+        try {
+          if (recorder.state !== 'inactive') {
+            recorder.stop();
+          } else {
+            resolve();
+          }
+        } catch (error) {
+          console.error('Error stopping recorder:', error);
+          resolve();
+        }
+      });
+      
+      mediaRecorderRef.current = null;
+      console.log('Recording stopped and uploaded');
+    }
+    
+    // Stop all camera tracks
+    if (streamRef.current) {
+      console.log('Stopping camera tracks...');
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log('Track stopped:', track.kind, track.label);
+      });
+      streamRef.current = null;
+    }
+    
+    // Clear video element
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+      videoRef.current.load(); // Force reload to release camera
     }
 
     try {
@@ -491,6 +568,7 @@ function App() {
     setIsStreaming(false);
     setActivityStatus('idle');
     setDetections([]);
+    console.log('Camera stopped successfully');
   };
 
   // Reset everything

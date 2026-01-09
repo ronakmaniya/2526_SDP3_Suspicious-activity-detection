@@ -91,3 +91,10 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
 }
+
+# VideoMAE fine-tuned model directory (used by /api/classify/)
+# You can override via environment variable VIDEOMAE_MODEL_DIR.
+VIDEOMAE_MODEL_DIR = os.environ.get(
+    'VIDEOMAE_MODEL_DIR',
+    str((BASE_DIR.parent / 'model_training' / 'checkpoints' / 'final_model').resolve()),
+)

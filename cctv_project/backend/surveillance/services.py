@@ -60,43 +60,13 @@ def _update_uptime() -> None:
 
 
 def tick_simulation() -> None:
-    """Generate the next simulated detection event and update in-memory state.
+    """Update uptime only - real detections come from YOLO/VideoMAE endpoints.
 
-    This keeps the 'data processing' on the Django side, while React only renders.
+    The simulation is disabled to allow real AI detection to work.
     """
-    if not STATE.running:
-        _update_uptime()
-        return
-
-    is_suspicious = random.random() < 0.15
-    status = 'suspicious' if is_suspicious else 'normal'
-
-    detection = {
-        'id': int(time.time() * 1000),
-        'x': random.random() * 60 + 10,
-        'y': random.random() * 50 + 10,
-        'width': random.random() * 15 + 15,
-        'height': random.random() * 20 + 25,
-        'status': status,
-        'confidence': f"{(random.random() * 20 + 80):.1f}",
-    }
-
-    STATE.detections = (STATE.detections + [detection])[-3:]
-    STATE.stats['totalDetections'] += 1
-    if status == 'normal':
-        STATE.stats['normalCount'] += 1
-    else:
-        STATE.stats['suspiciousCount'] += 1
-        STATE.alerts = ([
-            {
-                'id': detection['id'],
-                'message': '⚠️ Suspicious Activity Detected!',
-                'time': time.strftime('%H:%M:%S'),
-                'confidence': detection['confidence'],
-            }
-        ] + STATE.alerts)[:5]
-
     _update_uptime()
+    # Simulation disabled - real detection comes from /api/detect/ and /api/classify/ endpoints
+    return
 
 
 def get_state(activity_status: str) -> dict[str, Any]:

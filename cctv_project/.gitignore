@@ -39,7 +39,7 @@ node_modules/
 model_training/
 # Build outputs
 build/
-dist/
+dist/python scripts/train.py
 recordings/
 # npm/yarn/pnpm caches
 npm-debug.log*

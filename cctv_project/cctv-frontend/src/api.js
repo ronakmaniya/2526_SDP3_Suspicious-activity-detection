@@ -82,3 +82,22 @@ export async function apiDetectHumans(imageBase64, confidence = 0.5) {
   }
   return res.json();
 }
+
+export async function apiClassifyActivity(framesBase64, numFrames = 16) {
+  const res = await fetch(`${API_BASE_URL}/api/classify/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      frames: framesBase64,
+      numFrames
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Classify failed ${res.status}: ${text}`);
+  }
+  return res.json();
+}
