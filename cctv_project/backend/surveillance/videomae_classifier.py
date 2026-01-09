@@ -1,7 +1,7 @@
-"""VideoMAE-based activity classifier.
+"""Activity classifier.
 
-This module loads a fine-tuned `MCG-NJU/videomae-base` checkpoint and
-classifies a short clip as `normal` or `suspicious`.
+Temporary implementation: uses a custom YOLO model from Hugging Face to
+classify activity as `normal` or `suspicious`.
 
 Input is expected as a list of base64-encoded JPEG frames (data URLs are OK).
 """
@@ -10,17 +10,15 @@ from __future__ import annotations
 
 import base64
 import io
-import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 from PIL import Image
 
 
 _MODEL = None
-_PROCESSOR = None
-_DEVICE = None
+_MODEL_SOURCE = None
 
 
 @dataclass(frozen=True)
@@ -55,52 +53,67 @@ def _pick_frames(frames: List[Image.Image], num_frames: int) -> List[Image.Image
     return [frames[i] for i in indices]
 
 
-def _get_default_model_dir() -> Path:
-    # .../cctv_project/backend/surveillance/videomae_classifier.py
-    # parents[2] => .../cctv_project
-    project_dir = Path(__file__).resolve().parents[2]
-    return project_dir / "model_training" / "checkpoints" / "final_model"
+def _looks_like_hf_repo_id(value: str) -> bool:
+    v = value.strip()
+    return bool(v) and "/" in v and "\\" not in v and ":" not in v and not v.endswith(".pt")
 
 
-def _load_model(model_dir: Optional[str] = None):
-    global _MODEL, _PROCESSOR, _DEVICE
-    if _MODEL is not None and _PROCESSOR is not None and _DEVICE is not None:
-        return _MODEL, _PROCESSOR, _DEVICE
+def _load_model(model_source: Optional[str] = None):
+    """Load YOLO model.
+
+    model_source may be:
+    - local .pt file path
+    - local directory containing Suspicious_Activities_nano.pt
+    - Hugging Face repo id (owner/repo)
+    """
+
+    global _MODEL, _MODEL_SOURCE
+    if _MODEL is not None and _MODEL_SOURCE == (model_source or ""):
+        return _MODEL
 
     try:
-        import torch
-        from transformers import VideoMAEForVideoClassification, VideoMAEImageProcessor
+        from ultralytics import YOLO  # type: ignore
     except Exception as e:
-        raise RuntimeError(
-            "Missing dependencies for VideoMAE inference. Install: torch, torchvision, transformers"
-        ) from e
+        raise RuntimeError("Missing dependency for YOLO inference. Install: ultralytics") from e
 
-    # Determine model path with proper fallback
-    env_model_dir = os.environ.get("VIDEOMAE_MODEL_DIR", "").strip()
-    if model_dir and str(model_dir).strip():
-        model_path = Path(model_dir)
-    elif env_model_dir:
-        model_path = Path(env_model_dir)
+    resolved_source = (model_source or "").strip()
+    if not resolved_source:
+        resolved_source = "Accurateinfosolution/Suspicious_activity_detection_Yolov11_Custom"
+
+    # Resolve into a local weights file when using HF repo id
+    weights_path = resolved_source
+    if _looks_like_hf_repo_id(resolved_source):
+        try:
+            from huggingface_hub import hf_hub_download
+
+            weights_path = hf_hub_download(
+                repo_id=resolved_source,
+                filename="Suspicious_Activities_nano.pt",
+            )
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to download YOLO weights from Hugging Face. "
+                "Ensure internet access and that huggingface_hub is installed. "
+                f"Repo: {resolved_source}"
+            ) from e
     else:
-        model_path = _get_default_model_dir()
+        # If a directory is provided, try to locate the weights file inside it.
+        try:
+            from pathlib import Path
 
-    if not model_path.exists():
-        raise RuntimeError(f"VideoMAE model directory not found: {model_path}")
+            p = Path(resolved_source)
+            if p.exists() and p.is_dir():
+                candidate = p / "Suspicious_Activities_nano.pt"
+                if candidate.exists():
+                    weights_path = str(candidate)
+        except Exception:
+            # If path parsing fails, YOLO will raise a clearer error.
+            pass
 
-    print(f"Loading VideoMAE model from: {model_path}")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    processor = VideoMAEImageProcessor.from_pretrained(str(model_path))
-    model = VideoMAEForVideoClassification.from_pretrained(str(model_path))
-    model = model.to(device)  # type: ignore
-    model.eval()
-
+    model = YOLO(weights_path)
     _MODEL = model
-    _PROCESSOR = processor
-    _DEVICE = device
-
-    return model, processor, device
+    _MODEL_SOURCE = (model_source or "")
+    return model
 
 
 def classify_activity(
@@ -109,41 +122,68 @@ def classify_activity(
     num_frames: int = 16,
     model_dir: Optional[str] = None,
 ) -> ClassificationResult:
-    model, processor, device = _load_model(model_dir=model_dir)
+    model = _load_model(model_source=model_dir)
 
     frames = [_decode_data_url_jpeg(s) for s in frame_data_urls]
-    frames = _pick_frames(frames, num_frames=num_frames)
+    frames = _pick_frames(frames, num_frames=max(1, int(num_frames)))
     if not frames:
         raise RuntimeError("No frames provided")
 
-    inputs = processor(frames, return_tensors="pt")
+    # Use the most recent frame for speed.
+    frame = frames[-1]
+    img = np.array(frame)
 
-    import torch
+    # Run detection. Keep thresholds modest; frontend applies its own gating.
+    results = model(
+        img,
+        verbose=False,
+        conf=0.25,
+        iou=0.45,
+        imgsz=480,
+        max_det=50,
+    )
 
-    pixel_values = inputs["pixel_values"].to(device)
+    suspicious_labels = {"people", "person"}
+    max_people_conf = 0.0
+    max_suspicious_conf = 0.0
 
-    with torch.no_grad():
-        outputs = model(pixel_values=pixel_values)
-        logits = outputs.logits
-        probs = torch.softmax(logits, dim=-1)[0]
+    for r in results:
+        names = getattr(r, "names", None) or getattr(model, "names", {})
+        boxes = getattr(r, "boxes", None)
+        if boxes is None:
+            continue
 
-    pred_idx = int(torch.argmax(probs).item())
-    id2label: Dict[int, str] = {}
-    if hasattr(model.config, "id2label") and model.config.id2label is not None:
-        id2label = {int(k): v for k, v in model.config.id2label.items()}
-    else:
-        id2label = {0: "normal", 1: "suspicious"}
-    pred_label = id2label.get(pred_idx, str(pred_idx))
+        # Ultralytics Boxes expose cls/conf as tensors.
+        for cls, conf in zip(boxes.cls, boxes.conf):
+            cls_id = int(cls.item())
+            c = float(conf.item())
+            label = str(names.get(cls_id, cls_id)).strip().lower()
 
-    probabilities: Dict[str, float] = {}
-    for i in range(int(probs.shape[0])):
-        label = id2label.get(i, str(i))
-        probabilities[label] = float(probs[i].item() * 100.0)
+            if label in suspicious_labels:
+                max_people_conf = max(max_people_conf, c)
+            else:
+                max_suspicious_conf = max(max_suspicious_conf, c)
 
-    confidence = float(probs[pred_idx].item() * 100.0)
+    is_suspicious = max_suspicious_conf > 0.0
+    if is_suspicious:
+        confidence = max(70.0, max_suspicious_conf * 100.0)
+        probabilities = {
+            "normal": max(0.0, 100.0 - confidence),
+            "suspicious": min(100.0, confidence),
+        }
+        return ClassificationResult(
+            prediction="suspicious",
+            confidence=confidence,
+            probabilities=probabilities,
+        )
 
+    confidence = max(70.0, max_people_conf * 100.0 if max_people_conf > 0.0 else 80.0)
+    probabilities = {
+        "normal": min(100.0, confidence),
+        "suspicious": max(0.0, 100.0 - confidence),
+    }
     return ClassificationResult(
-        prediction=str(pred_label),
+        prediction="normal",
         confidence=confidence,
         probabilities=probabilities,
     )

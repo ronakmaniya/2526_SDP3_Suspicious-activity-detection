@@ -92,9 +92,14 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
 }
 
-# VideoMAE fine-tuned model directory (used by /api/classify/)
-# You can override via environment variable VIDEOMAE_MODEL_DIR.
+# Activity model identifier (used by /api/classify/)
+#
+# Can be either:
+# - Local path (directory or .pt file)
+# - Hugging Face repo id (e.g. owner/repo)
+#
+# Override via environment variable VIDEOMAE_MODEL_DIR.
 VIDEOMAE_MODEL_DIR = os.environ.get(
     'VIDEOMAE_MODEL_DIR',
-    str((BASE_DIR.parent / 'model_training' / 'checkpoints' / 'final_model').resolve()),
+    'Accurateinfosolution/Suspicious_activity_detection_Yolov11_Custom',
 )
