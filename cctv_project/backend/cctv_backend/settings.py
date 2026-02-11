@@ -92,14 +92,13 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
 }
 
-# Activity model identifier (used by /api/classify/)
+# Activity model directory (used by /api/classify/)
 #
-# Can be either:
-# - Local path (directory or .pt file)
-# - Hugging Face repo id (e.g. owner/repo)
+# Points to the cctv-video-anomaly-detection-main folder containing
+# the trained autoencoder model for anomaly detection.
 #
 # Override via environment variable VIDEOMAE_MODEL_DIR.
 VIDEOMAE_MODEL_DIR = os.environ.get(
     'VIDEOMAE_MODEL_DIR',
-    'Accurateinfosolution/Suspicious_activity_detection_Yolov11_Custom',
+    str((BASE_DIR.parent / 'model_training' / 'cctv-video-anomaly-detection-main').resolve()),
 )

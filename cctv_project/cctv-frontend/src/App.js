@@ -74,17 +74,17 @@ function App() {
     const imageBase64 = canvas.toDataURL('image/jpeg', 0.7);
 
     // Maintain a short buffer of frames for VideoMAE classification.
-    // We keep the last ~32 frames and classify using the last 16.
+    // We keep the last ~16 frames and classify using the last 8.
     const buf = frameBufferRef.current;
     buf.push(imageBase64);
-    if (buf.length > 32) buf.splice(0, buf.length - 32);
+    if (buf.length > 16) buf.splice(0, buf.length - 16);
 
-    // Run classification every ~2 seconds once we have enough frames.
+    // Run classification every ~1 second once we have enough frames.
     const nowMs = Date.now();
-    if (buf.length >= 16 && nowMs - lastClassifyAtMsRef.current >= 2000) {
+    if (buf.length >= 8 && nowMs - lastClassifyAtMsRef.current >= 1000) {
       lastClassifyAtMsRef.current = nowMs;
       try {
-        const classifyRes = await apiClassifyActivity(buf.slice(-16), 16);
+        const classifyRes = await apiClassifyActivity(buf.slice(-8), 8);
         if (classifyRes?.success && classifyRes?.prediction) {
           activityModelRef.current = {
             prediction: classifyRes.prediction,

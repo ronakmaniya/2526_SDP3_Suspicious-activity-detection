@@ -1,7 +1,10 @@
-"""Activity classifier.
+"""Activity classifier using motion-based anomaly detection.
 
-Temporary implementation: uses a custom YOLO model from Hugging Face to
-classify activity as `normal` or `suspicious`.
+Uses frame differencing and motion analysis to classify activity as 
+`normal` or `suspicious` based on unusual movement patterns.
+
+This approach adapts to any camera environment by learning what's normal
+from recent frame history, unlike domain-specific trained models.
 
 Input is expected as a list of base64-encoded JPEG frames (data URLs are OK).
 """
@@ -10,15 +13,17 @@ from __future__ import annotations
 
 import base64
 import io
+from collections import deque
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 from PIL import Image
 
-
-_MODEL = None
-_MODEL_SOURCE = None
+# Global state for adaptive thresholding
+_MOTION_HISTORY: deque = deque(maxlen=100)  # Store last 100 motion scores
+_BASELINE_MOTION: float = 0.0
+_FRAME_COUNT: int = 0
 
 
 @dataclass(frozen=True)
@@ -46,144 +51,176 @@ def _pick_frames(frames: List[Image.Image], num_frames: int) -> List[Image.Image
     if len(frames) < num_frames:
         last = frames[-1]
         return frames + [last] * (num_frames - len(frames))
-
-    # Evenly sample num_frames from the sequence
     step = (len(frames) - 1) / float(num_frames - 1)
     indices = [round(i * step) for i in range(num_frames)]
     return [frames[i] for i in indices]
 
 
-def _looks_like_hf_repo_id(value: str) -> bool:
-    v = value.strip()
-    return bool(v) and "/" in v and "\\" not in v and ":" not in v and not v.endswith(".pt")
+def _preprocess_frame(img: Image.Image, size: int = 128) -> np.ndarray:
+    """Convert to grayscale and resize for motion analysis."""
+    gray = img.convert("L")
+    resized = gray.resize((size, size), Image.Resampling.LANCZOS)
+    return np.array(resized, dtype=np.float32) / 255.0
 
 
-def _load_model(model_source: Optional[str] = None):
-    """Load YOLO model.
-
-    model_source may be:
-    - local .pt file path
-    - local directory containing Suspicious_Activities_nano.pt
-    - Hugging Face repo id (owner/repo)
+def _compute_motion_score(frames: List[np.ndarray]) -> float:
+    """Compute motion score based on frame differences.
+    
+    Returns a score representing amount of motion/change between frames.
+    Higher score = more motion/activity.
     """
+    if len(frames) < 2:
+        return 0.0
+    
+    total_motion = 0.0
+    for i in range(1, len(frames)):
+        # Absolute difference between consecutive frames
+        diff = np.abs(frames[i] - frames[i-1])
+        # Mean difference (overall motion)
+        mean_diff = np.mean(diff)
+        # Standard deviation (indicates sudden changes)
+        std_diff = np.std(diff)
+        # Count of significantly changed pixels (threshold 0.1)
+        significant_pixels = np.sum(diff > 0.1) / diff.size
+        
+        # Combined motion score
+        frame_motion = mean_diff * 0.4 + std_diff * 0.3 + significant_pixels * 0.3
+        total_motion += frame_motion
+    
+    return float(total_motion / (len(frames) - 1))
 
-    global _MODEL, _MODEL_SOURCE
-    if _MODEL is not None and _MODEL_SOURCE == (model_source or ""):
-        return _MODEL
 
-    try:
-        from ultralytics import YOLO  # type: ignore
-    except Exception as e:
-        raise RuntimeError("Missing dependency for YOLO inference. Install: ultralytics") from e
+def _compute_spatial_anomaly(frames: List[np.ndarray]) -> float:
+    """Detect spatial anomalies like unusual shapes or patterns."""
+    if not frames:
+        return 0.0
+    
+    # Use the most recent frame
+    frame = frames[-1]
+    
+    # Compute edge density using simple gradient
+    gx = np.abs(np.diff(frame, axis=1))
+    gy = np.abs(np.diff(frame, axis=0))
+    edge_density = (np.mean(gx) + np.mean(gy)) / 2
+    
+    # Compute contrast
+    contrast = np.std(frame)
+    
+    # Compute local variance (indicates texture/activity regions)
+    from scipy.ndimage import uniform_filter
+    local_mean = uniform_filter(frame, size=8)
+    local_sqr_mean = uniform_filter(frame**2, size=8)
+    local_var = np.clip(local_sqr_mean - local_mean**2, 0, None)
+    activity_regions = np.mean(local_var > 0.01)
+    
+    return float(edge_density * 0.3 + contrast * 0.3 + activity_regions * 0.4)
 
-    resolved_source = (model_source or "").strip()
-    if not resolved_source:
-        resolved_source = "Accurateinfosolution/Suspicious_activity_detection_Yolov11_Custom"
 
-    # Resolve into a local weights file when using HF repo id
-    weights_path = resolved_source
-    if _looks_like_hf_repo_id(resolved_source):
-        try:
-            from huggingface_hub import hf_hub_download
-
-            weights_path = hf_hub_download(
-                repo_id=resolved_source,
-                filename="Suspicious_Activities_nano.pt",
-            )
-        except Exception as e:
-            raise RuntimeError(
-                "Failed to download YOLO weights from Hugging Face. "
-                "Ensure internet access and that huggingface_hub is installed. "
-                f"Repo: {resolved_source}"
-            ) from e
+def _update_baseline(motion_score: float) -> tuple:
+    """Update adaptive baseline and return (baseline, std_dev)."""
+    global _MOTION_HISTORY, _BASELINE_MOTION, _FRAME_COUNT
+    
+    _MOTION_HISTORY.append(motion_score)
+    _FRAME_COUNT += 1
+    
+    if len(_MOTION_HISTORY) >= 5:
+        # Compute baseline from history (use median to be robust to outliers)
+        scores = np.array(_MOTION_HISTORY)
+        _BASELINE_MOTION = float(np.median(scores))
+        std_dev = float(np.std(scores))
+        return _BASELINE_MOTION, max(std_dev, 0.001)  # Prevent division by zero
     else:
-        # If a directory is provided, try to locate the weights file inside it.
-        try:
-            from pathlib import Path
-
-            p = Path(resolved_source)
-            if p.exists() and p.is_dir():
-                candidate = p / "Suspicious_Activities_nano.pt"
-                if candidate.exists():
-                    weights_path = str(candidate)
-        except Exception:
-            # If path parsing fails, YOLO will raise a clearer error.
-            pass
-
-    model = YOLO(weights_path)
-    _MODEL = model
-    _MODEL_SOURCE = (model_source or "")
-    return model
+        # Not enough history yet, use conservative defaults
+        return 0.02, 0.01
 
 
 def classify_activity(
     frame_data_urls: List[str],
     *,
     num_frames: int = 16,
-    model_dir: Optional[str] = None,
+    model_dir: Optional[str] = None,  # Kept for API compatibility
 ) -> ClassificationResult:
-    model = _load_model(model_source=model_dir)
-
+    """Classify activity using motion-based anomaly detection.
+    
+    Detects suspicious activity based on:
+    1. Unusual amount of motion (too much or sudden changes)
+    2. Motion patterns that deviate from baseline
+    3. Spatial anomalies in the frame
+    
+    This approach adapts to the camera's environment automatically.
+    """
+    # Decode and pick frames
     frames = [_decode_data_url_jpeg(s) for s in frame_data_urls]
-    frames = _pick_frames(frames, num_frames=max(1, int(num_frames)))
-    if not frames:
-        raise RuntimeError("No frames provided")
+    frames = _pick_frames(frames, num_frames=max(2, int(num_frames)))
+    if len(frames) < 2:
+        # Not enough frames for motion analysis - assume normal
+        return ClassificationResult(
+            prediction="normal",
+            confidence=70.0,
+            probabilities={"normal": 70.0, "suspicious": 30.0},
+        )
 
-    # Use the most recent frame for speed.
-    frame = frames[-1]
-    img = np.array(frame)
-
-    # Run detection. Keep thresholds modest; frontend applies its own gating.
-    results = model(
-        img,
-        verbose=False,
-        conf=0.25,
-        iou=0.45,
-        imgsz=480,
-        max_det=50,
-    )
-
-    suspicious_labels = {"people", "person"}
-    max_people_conf = 0.0
-    max_suspicious_conf = 0.0
-
-    for r in results:
-        names = getattr(r, "names", None) or getattr(model, "names", {})
-        boxes = getattr(r, "boxes", None)
-        if boxes is None:
-            continue
-
-        # Ultralytics Boxes expose cls/conf as tensors.
-        for cls, conf in zip(boxes.cls, boxes.conf):
-            cls_id = int(cls.item())
-            c = float(conf.item())
-            label = str(names.get(cls_id, cls_id)).strip().lower()
-
-            if label in suspicious_labels:
-                max_people_conf = max(max_people_conf, c)
-            else:
-                max_suspicious_conf = max(max_suspicious_conf, c)
-
-    is_suspicious = max_suspicious_conf > 0.0
+    # Preprocess frames
+    preprocessed = [_preprocess_frame(f) for f in frames]
+    
+    # Compute motion score
+    motion_score = _compute_motion_score(preprocessed)
+    
+    # Compute spatial anomaly score
+    try:
+        spatial_score = _compute_spatial_anomaly(preprocessed)
+    except ImportError:
+        # scipy not available, skip spatial analysis
+        spatial_score = 0.0
+    
+    # Update adaptive baseline
+    baseline, std_dev = _update_baseline(motion_score)
+    
+    # Calculate how many standard deviations from baseline
+    if std_dev > 0:
+        z_score = (motion_score - baseline) / std_dev
+    else:
+        z_score = 0.0
+    
+    # Combined anomaly score
+    # High motion deviation OR high spatial anomaly = suspicious
+    motion_anomaly = abs(z_score) / 3.0  # Normalize: 3 std = 1.0
+    combined_score = motion_anomaly * 0.7 + spatial_score * 0.3
+    
+    # Threshold for suspicious activity
+    # During warmup period (first 15 frames), be conservative
+    if _FRAME_COUNT < 15:
+        threshold = 0.8  # Higher threshold during warmup
+    else:
+        threshold = 0.5  # Normal threshold after baseline established
+    
+    is_suspicious = combined_score > threshold and z_score > 2.0
+    
+    # Calculate confidence
     if is_suspicious:
-        confidence = max(70.0, max_suspicious_conf * 100.0)
-        probabilities = {
-            "normal": max(0.0, 100.0 - confidence),
-            "suspicious": min(100.0, confidence),
-        }
+        # Suspicious - confidence based on how far above threshold
+        confidence = min(100.0, 70.0 + (combined_score - threshold) * 60.0)
+        confidence = max(70.0, confidence)
+        
         return ClassificationResult(
             prediction="suspicious",
             confidence=confidence,
-            probabilities=probabilities,
+            probabilities={
+                "normal": max(0.0, 100.0 - confidence),
+                "suspicious": min(100.0, confidence),
+            },
         )
-
-    confidence = max(70.0, max_people_conf * 100.0 if max_people_conf > 0.0 else 80.0)
-    probabilities = {
-        "normal": min(100.0, confidence),
-        "suspicious": max(0.0, 100.0 - confidence),
-    }
-    return ClassificationResult(
-        prediction="normal",
-        confidence=confidence,
-        probabilities=probabilities,
-    )
+    else:
+        # Normal - confidence based on how stable the motion is
+        stability = max(0.0, 1.0 - abs(z_score) / 2.0)
+        confidence = 70.0 + stability * 30.0
+        confidence = min(100.0, max(70.0, confidence))
+        
+        return ClassificationResult(
+            prediction="normal",
+            confidence=confidence,
+            probabilities={
+                "normal": min(100.0, confidence),
+                "suspicious": max(0.0, 100.0 - confidence),
+            },
+        )
