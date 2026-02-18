@@ -1,0 +1,35 @@
+# ===========================
+# Docker Compose - Full Stack
+# AI Surveillance System
+# ===========================
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: surveillance-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - media_data:/app/media
+      - ./backend/ai_models:/app/ai_models
+    environment:
+      - DJANGO_SECRET_KEY=your-secret-key-change-in-production
+      - DJANGO_DEBUG=True
+      - DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,backend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: surveillance-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  media_data:
