@@ -1,0 +1,25 @@
+# ===========================
+# Django Backend Dependencies
+# ===========================
+
+# Django
+Django>=4.2,<5.0
+djangorestframework>=3.14
+django-cors-headers>=4.3
+gunicorn>=21.2
+
+# AI / ML
+torch>=2.1.0
+torchvision>=0.16.0
+ultralytics>=8.1.0
+numpy>=1.24
+Pillow>=10.0
+fvcore>=0.1.5
+
+# Video Processing
+opencv-python-headless>=4.8
+opencv-contrib-python-headless>=4.8
+
+# Utilities
+python-decouple>=3.8
+psutil>=5.9
