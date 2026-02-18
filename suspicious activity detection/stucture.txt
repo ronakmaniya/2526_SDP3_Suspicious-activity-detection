@@ -1,0 +1,470 @@
+================================================================================
+   REAL-TIME AI-BASED SUSPICIOUS ACTIVITY DETECTION SYSTEM — PROJECT FLOW
+================================================================================
+
+
+========================
+  SYSTEM ARCHITECTURE
+========================
+
+    ┌─────────────┐         HTTP (REST API)         ┌─────────────────┐
+    │   FRONTEND   │  ◄──────────────────────────►  │    BACKEND       │
+    │  React+Vite  │    POST /api/analyze-frame/    │  Django + DRF    │
+    │  Port: 3000  │    POST /api/upload-video/     │  Port: 8000      │
+    └─────────────┘    POST /api/live-session/      └────────┬────────┘
+                                                             │
+                                                    ┌────────▼────────┐
+                                                    │   AI ENGINE      │
+                                                    │  (pipeline.py)   │
+                                                    │                  │
+                                                    │  ┌────────────┐  │
+                                                    │  │  YOLOv8n   │  │
+                                                    │  └────────────┘  │
+                                                    │  ┌────────────┐  │
+                                                    │  │ SlowFast   │  │
+                                                    │  │  R101      │  │
+                                                    │  └────────────┘  │
+                                                    └────────┬────────┘
+                                                             │
+                                                    ┌────────▼────────┐
+                                                    │    DATABASE      │
+                                                    │   SQLite3        │
+                                                    │  (db.sqlite3)    │
+                                                    └─────────────────┘
+
+
+================================================================================
+  MODE 1: LIVE CAMERA MONITORING (Real-Time)
+================================================================================
+
+  Step-by-step flow when user clicks "Start Camera":
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                         FRONTEND (LiveMonitor.jsx)                       │
+  │                                                                          │
+  │  1. Browser accesses WEBCAM via navigator.mediaDevices.getUserMedia()    │
+  │     ► Captures video stream at 640x480, 24 FPS target                   │
+  │                                                                          │
+  │  2. VIDEO is NOT converted — frames are extracted LIVE:                  │
+  │     ► Each frame: <video> element → drawn onto <canvas>                 │
+  │     ► Canvas converts frame to JPEG image (quality 0.5)                 │
+  │     ► JPEG → Base64 string (strip data URL prefix)                      │
+  │                                                                          │
+  │  3. Base64 frame sent via POST /api/analyze-frame/                      │
+  │     ► Sequential: waits for response before sending next frame          │
+  │     ► Achieves ~3-10 FPS actual (limited by backend speed)              │
+  │                                                                          │
+  │  4. Receives JSON response with detection results                       │
+  │     ► Draws bounding boxes on overlay <canvas> (tactical HUD style)     │
+  │     ► Updates detection sidebar and suspicious events list              │
+  └──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            │  POST { frame: "base64...", recording_id, session_id }
+                            ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                    BACKEND (views.py → FrameAnalysisView)                │
+  │                                                                          │
+  │  5. Decode base64 → bytes → numpy array (OpenCV image, BGR format)      │
+  │     ► base64.b64decode() → np.frombuffer() → cv2.imdecode()             │
+  │     ► Result: numpy array shape (480, 640, 3) — a SINGLE IMAGE FRAME    │
+  │                                                                         │
+  │  NOTE: Video is NEVER sent as a whole file in live mode.                │
+  │        Each frame is an independent JPEG image sent one at a time.      │
+  └──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            │  frame (numpy array) passed to pipeline
+                            ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                      AI PIPELINE (pipeline.py)                           │
+  │                                                                          │
+  │  6. FRAME SKIPPING CHECK:                                               │
+  │     ► Only runs YOLO every 3rd frame (DETECT_EVERY_N_FRAMES = 3)       │
+  │     ► On skipped frames → reuses cached YOLO results                   │
+  │     ► Purpose: 3x speed boost                                           │
+  │                                                                          │
+  │  ┌────────────────────────────────────────────────────────────────────┐  │
+  │  │  STEP A: HUMAN DETECTION — YOLOv8n (human_detector.py)            │  │
+  │  │                                                                    │  │
+  │  │  ► Model: yolov8n.pt (nano — fastest variant, 3.2M params)       │  │
+  │  │  ► Input: Single image frame resized to 320x320 pixels           │  │
+  │  │  ► Detects: ONLY class 0 = "person" (from COCO dataset)          │  │
+  │  │  ► Confidence threshold: 0.4                                      │  │
+  │  │                                                                    │  │
+  │  │  ► Output for EACH detected person:                               │  │
+  │  │    - bbox: [x1, y1, x2, y2] bounding box coordinates             │  │
+  │  │    - confidence: float (e.g., 0.87)                               │  │
+  │  │    - crop: cropped image of that person (numpy sub-array)         │  │
+  │  │                                                                    │  │
+  │  │  ► Example: Detects 2 people → returns 2 detections with crops   │  │
+  │  └────────────────────────────────────────────────────────────────────┘  │
+  │                            │                                             │
+  │                            ▼                                             │
+  │  ┌────────────────────────────────────────────────────────────────────┐  │
+  │  │  STEP B: SLIDING WINDOW — Collect 32 Frames Per Person            │  │
+  │  │                                                                    │  │
+  │  │  ► For each detected person (person_0, person_1, ...):            │  │
+  │  │    - Cropped image added to that person's deque buffer            │  │
+  │  │    - Buffer size: 32 frames (SLIDING_WINDOW_SIZE)                 │  │
+  │  │    - Acts like a rolling window of the last 32 crops              │  │
+  │  │                                                                    │  │
+  │  │  ► Window NOT full (< 32 crops) → Skip classification            │  │
+  │  │    - Default label: "normal", confidence: 0.0                     │  │
+  │  │                                                                    │  │
+  │  │  ► Window FULL (32 crops) → Send to activity classifier          │  │
+  │  │    - But ONLY every 8th frame (CLASSIFY_COOLDOWN = 8)            │  │
+  │  │    - On cooldown frames → reuses cached classification           │  │
+  │  └────────────────────────────────────────────────────────────────────┘  │
+  │                            │                                             │
+  │                            ▼ (when 16 frames collected + cooldown ready) │
+  │  ┌────────────────────────────────────────────────────────────────────┐  │
+  │  │  STEP C: ACTIVITY CLASSIFICATION — SlowFast-R101                  │  │
+  │  │          (activity_classifier.py via pytorchvideo)                 │  │
+  │  │                                                                    │  │
+  │  │  ► Model: SlowFast-R101 (dual-pathway 3D ResNet)                  │  │
+  │  │    - Pretrained on Kinetics-400 (400 action classes, 77.9% top1)  │  │
+  │  │    - Loaded via torch.hub from local pytorchvideo-main folder     │  │
+  │  │    - Weights auto-downloaded: SLOWFAST_8x8_R101.pyth              │  │
+  │  │                                                                    │  │
+  │  │  ► Input Processing:                                               │  │
+  │  │    1. Takes 32 cropped person images (from sliding window)        │  │
+  │  │    2. Each crop: BGR → RGB → Resize short side 256 → Center      │  │
+  │  │       crop 256×256 → Normalize(mean=0.45, std=0.225)             │  │
+  │  │    3. PackPathway transform (alpha=4):                            │  │
+  │  │       - Slow pathway: every 4th frame → 8 frames                 │  │
+  │  │       - Fast pathway: all 32 frames                               │  │
+  │  │    4. Tensors: [slow(1,3,8,256,256), fast(1,3,32,256,256)]       │  │
+  │  │                                                                    │  │
+  │  │  ► Inference (with torch.no_grad()):                              │  │
+  │  │    - Dual-pathway forward pass through 3D ResNet-101              │  │
+  │  │    - Softmax → probabilities for 400 Kinetics action classes      │  │
+  │  │                                                                    │  │
+  │  │  ► Suspicious Activity Mapping:                                    │  │
+  │  │    - 12 Kinetics classes flagged as suspicious:                   │  │
+  │  │      drop kicking, headbutting, high kick, punching bag,          │  │
+  │  │      punching person, side kick, slapping, sword fighting,        │  │
+  │  │      throwing axe, spray painting, pushing car, ripping paper     │  │
+  │  │                                                                    │  │
+  │  │  ► Output:                                                         │  │
+  │  │    - label: "normal" OR "suspicious"                              │  │
+  │  │    - activity: specific Kinetics-400 class name (e.g. "running") │  │
+  │  │    - confidence: float (e.g., 0.92)                               │  │
+  │  │    - probabilities: { normal: 0.08, suspicious: 0.92 }           │  │
+  │  └────────────────────────────────────────────────────────────────────┘  │
+  │                            │                                             │
+  │                            ▼                                             │
+  │  7. COMBINE RESULTS:                                                    │
+  │     ► Each person gets: bbox + YOLO confidence + activity label +       │
+  │       activity confidence + activity name + person_id + timestamp       │
+  │     ► Skip OpenCV annotation (frontend draws its own overlay)           │
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            │  JSON Response (no image — just detection data)
+                            ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │                    RESPONSE TO FRONTEND                                  │
+  │                                                                          │
+  │  {                                                                       │
+  │    "detections": [                                                       │
+  │      {                                                                   │
+  │        "bbox": [120, 50, 340, 410],                                     │
+  │        "detection_confidence": 0.87,                                     │
+  │        "activity_label": "suspicious",                                   │
+  │        "activity_confidence": 0.92,                                      │
+  │        "activity": "punching person (boxing)",                           │
+  │        "person_id": "person_0"                                          │
+  │      }                                                                   │
+  │    ],                                                                    │
+  │    "timestamp": "14:30:25",                                             │
+  │    "frame_number": 142                                                   │
+  │  }                                                                       │
+  │                                                                          │
+  │  8. Frontend draws tactical HUD overlay on canvas:                      │
+  │     ► Green box + "NORMAL" label for normal activity                    │
+  │     ► Red box + glow + "SUSPICIOUS" label for suspicious activity       │
+  │     ► Activity name tag at bottom-left corner of bounding box           │
+  │     ► Corner decorations, person ID tags, live indicator                │
+  │                                                                          │
+  │  9. If suspicious (confidence > 0.6):                                   │
+  │     ► DetectionEvent saved to database                                  │
+  │     ► Shown in "Suspicious Events" sidebar                             │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+  MODE 2: VIDEO UPLOAD (Offline Processing)
+================================================================================
+
+  Step-by-step flow when user uploads an MP4 file:
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  1. User drags & drops or selects an MP4 video file                     │
+  │     ► Frontend sends as multipart/form-data to POST /api/upload-video/  │
+  └──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  2. Backend saves MP4 file to disk: media/uploaded_videos/              │
+  │     ► Creates VideoRecording in database (status: "processing")         │
+  │     ► Returns 202 Accepted immediately (non-blocking)                   │
+  │     ► Spawns BACKGROUND THREAD for processing                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼   (Background Thread — video_processor.py)
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  3. VIDEO → FRAMES (OpenCV):                                            │
+  │     ► cv2.VideoCapture(input_path) opens the MP4 file                  │
+  │     ► Reads frames ONE BY ONE in a while loop: cap.read() → frame      │
+  │     ► Each frame is a numpy image array (H, W, 3) BGR                  │
+  │                                                                          │
+  │  4. FRAME SKIPPING for speed:                                           │
+  │     ► Only runs full AI pipeline every 3rd frame                        │
+  │     ► Skipped frames get annotated with cached results                  │
+  │     ► ALL frames written to output video (smooth playback)              │
+  │                                                                          │
+  │  5. Each processed frame goes through SAME pipeline as live mode:       │
+  │     ► YOLOv8n → detect humans → crop persons                           │
+  │     ► Sliding window → collect 32 crops per person                     │
+  │     ► SlowFast-R101 → classify normal/suspicious + activity name       │
+  │     ► OpenCV annotates frame (boxes + labels + activity + timestamp)    │
+  │                                                                          │
+  │  6. Annotated frames written to OUTPUT MP4:                             │
+  │     ► cv2.VideoWriter → media/processed_videos/                        │
+  │     ► Same FPS, width, height as original                               │
+  │                                                                          │
+  │  7. After all frames processed:                                         │
+  │     ► VideoRecording updated: status="completed", counts, duration      │
+  │     ► Suspicious DetectionEvents saved to database                      │
+  └──────────────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  8. Frontend polls GET /api/recordings/{id}/status_check/               │
+  │     ► When status becomes "completed" → shows results                   │
+  │     ► User can download the annotated video from Recordings page        │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+  COMPLETE DATA FLOW DIAGRAM (SINGLE FRAME)
+================================================================================
+
+  Webcam / Video File
+        │
+        ▼
+  ┌─────────────┐    base64 JPEG     ┌──────────────┐
+  │  Frame       │ ────────────────► │  Django API   │
+  │  (640×480)   │    50% quality     │  views.py     │
+  └─────────────┘                    └──────┬───────┘
+                                            │
+                                  base64 → bytes → numpy
+                                            │
+                                            ▼
+                                   ┌────────────────┐
+                                   │  Frame Skip?   │
+                                   │  (every 3rd)   │
+                                   └───┬────────┬───┘
+                                  YES  │        │ NO (run YOLO)
+                                       │        │
+                           Use cached   │        ▼
+                           detections   │  ┌──────────────┐
+                                       │  │   YOLOv8n     │
+                                       │  │  (320×320)    │
+                                       │  │  Detect       │
+                                       │  │  Persons      │
+                                       │  └──────┬───────┘
+                                       │         │
+                                       ▼         ▼
+                                   ┌──────────────────┐
+                                   │  For each person: │
+                                   │  Crop image       │
+                                   │  Add to sliding   │
+                                   │  window (32 max)  │
+                                   └────────┬─────────┘
+                                            │
+                                            ▼
+                                   ┌────────────────┐
+                                   │ Window full?    │
+                                   │ (32 crops)      │
+                                   └──┬──────────┬──┘
+                                  NO  │          │ YES
+                                      │          ▼
+                              Label:  │  ┌────────────────┐
+                              "normal"│  │ Cooldown ready? │
+                              conf: 0 │  │ (every 8th)    │
+                                      │  └──┬──────────┬──┘
+                                      │  NO │          │ YES
+                                      │     │          ▼
+                                      │  Use cached  ┌──────────────────┐
+                                      │  result      │ SlowFast-R101    │
+                                      │              │ Dual Pathway     │
+                                      │              │ slow(1,3,8,256,  │
+                                      │              │  256)             │
+                                      │              │ fast(1,3,32,256, │
+                                      │              │  256)             │
+                                      │              │                  │
+                                      │              │ Kinetics-400 cls │
+                                      │              │ → suspicious map  │
+                                      │              └────────┬─────────┘
+                                      │                       │
+                                      ▼                       ▼
+                                   ┌──────────────────────────────┐
+                                   │  COMBINE FINAL RESULT:       │
+                                   │  bbox + confidence +         │
+                                   │  activity_label +            │
+                                   │  activity_confidence +       │
+                                   │  activity (name) +           │
+                                   │  person_id + timestamp       │
+                                   └──────────────┬───────────────┘
+                                                  │
+                                         JSON response
+                                                  │
+                                                  ▼
+                                   ┌──────────────────────────────┐
+                                   │  FRONTEND draws overlay:     │
+                                   │  ● Green box = NORMAL        │
+                                   │  ● Red box + glow = SUSPECT  │
+                                   │  ● Person ID tags            │
+                                   │  ● Timestamp + FPS           │
+                                   └──────────────────────────────┘
+
+
+
+================================================================================
+  MODEL DETAILS
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  MODEL 1: YOLOv8n (Human Detection)                                 │
+  │                                                                      │
+  │  Purpose:   Find all humans in a frame                              │
+  │  File:      yolov8n.pt (auto-downloaded by Ultralytics)             │
+  │  Size:      ~6 MB (nano — smallest & fastest)                       │
+  │  Params:    3.2 million                                              │
+  │  Input:     Single image, resized to 320×320                        │
+  │  Output:    List of bounding boxes + confidence scores              │
+  │  Speed:     ~15-40ms per frame on CPU                               │
+  │  Filters:   Only class 0 ("person"), confidence ≥ 0.4              │
+  │  Framework: Ultralytics / PyTorch                                    │
+  └──────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  MODEL 2: Video Swin Transformer (Activity Classification)          │
+  │                                                                      │
+  │  Purpose:   Classify human behavior as normal or suspicious         │
+  │  File:      ai_models/video_swin_model.pth (trained by user)        │
+  │  Size:      ~45 MB                                                   │
+  │  Params:    ~12 million                                              │
+  │  Input:     16 frames of a cropped person, each resized to 224×224  │
+  │             Tensor shape: (1, 3, 16, 224, 224) — [B, C, T, H, W]   │
+  │  Output:    2 classes — { normal: 0.15, suspicious: 0.85 }          │
+  │  Speed:     ~50-150ms per classification on CPU                     │
+  │  Architecture:                                                       │
+  │    ► 3D Patch Embedding: Conv3D(3→96, kernel=2×4×4, stride=2×4×4)  │
+  │    ► Stage 1: Conv3D(96→192)  + BN + GELU  ×2 blocks               │
+  │    ► Stage 2: Conv3D(192→384) + BN + GELU  ×2 blocks               │
+  │    ► Stage 3: Conv3D(384→768) + BN + GELU  ×6 blocks               │
+  │    ► AdaptiveAvgPool3d(1) → Flatten → FC(768→512) → FC(512→2)     │
+  │  Framework: PyTorch (custom nn.Module)                               │
+  └──────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+  PERFORMANCE OPTIMIZATIONS
+================================================================================
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  Optimization               │  What it does          │  Speedup   │
+  ├─────────────────────────────┼────────────────────────┼────────────┤
+  │  YOLOv8n instead of v8x     │  Smaller model (3M     │  ~15-20x   │
+  │                              │  vs 68M params)        │            │
+  │  YOLO input 320px           │  Smaller input image   │  ~3-4x     │
+  │  Frame skipping (every 3)   │  Skip 2/3 of YOLO      │  ~3x       │
+  │  Classifier cooldown (8)    │  Skip 7/8 of SlowFast │  ~8x       │
+  │  No annotated frame encode  │  Skip imencode+b64     │  ~15-30ms  │
+  │  JPEG quality 50%           │  Smaller payload       │  ~40% less │
+  │  Sequential frame sending   │  No request pile-up    │  Stable    │
+  └─────────────────────────────┴────────────────────────┴────────────┘
+
+  Before: ~1-2 seconds per frame on CPU
+  After:  ~30-80ms per processed frame on CPU
+
+
+================================================================================
+  FOLDER STRUCTURE — WHAT EACH FILE DOES
+================================================================================
+
+  project-root/
+  │
+  ├── start.py                    ← Launches both Django + React together
+  ├── docker-compose.yml          ← Docker setup for production
+  ├── .gitignore
+  ├── README.md
+  │
+  ├── backend/                    ← Django REST API Server
+  │   ├── manage.py               ← Django management commands
+  │   ├── requirements.txt        ← Python dependencies
+  │   ├── yolov8n.pt              ← YOLO model weights (auto-downloaded)
+  │   ├── db.sqlite3              ← SQLite database
+  │   │
+  │   ├── surveillance_backend/   ← Django Project Settings
+  │   │   ├── settings.py         ← AI model config, CORS, media paths
+  │   │   ├── urls.py             ← Root URL routing
+  │   │   └── wsgi.py / asgi.py
+  │   │
+  │   ├── detection/              ← Main Django App
+  │   │   ├── models.py           ← DetectionEvent, VideoRecording (DB tables)
+  │   │   ├── views.py            ← API endpoints (analyze-frame, upload, etc.)
+  │   │   ├── serializers.py      ← Request/response validation
+  │   │   ├── urls.py             ← API URL routing
+  │   │   │
+  │   │   └── ai_engine/          ← AI Processing Core
+  │   │       ├── pipeline.py     ← Main orchestrator (YOLO → Window → SlowFast)
+  │   │       ├── human_detector.py    ← YOLOv8n wrapper
+  │   │       ├── activity_classifier.py ← SlowFast-R101 (pytorchvideo)
+  │   │       └── video_processor.py   ← MP4 recording + upload processing
+  │   │
+  │   └── media/                  ← Stored video files
+  │       ├── uploaded_videos/
+  │       ├── processed_videos/
+  │       ├── live_recordings/
+  │       └── suspicious_clips/
+  │
+  ├── frontend/                   ← React + Vite Frontend
+  │   ├── package.json
+  │   ├── vite.config.js
+  │   └── src/
+  │       ├── App.jsx             ← Router (Dashboard, Live, Upload, Recordings)
+  │       ├── main.jsx            ← Entry point
+  │       ├── index.css           ← Dark theme styles
+  │       ├── services/
+  │       │   └── api.js          ← All API call functions (axios)
+  │       └── components/
+  │           ├── Dashboard.jsx   ← Stats, health, recent events
+  │           ├── LiveMonitor.jsx ← Webcam capture + real-time AI analysis
+  │           ├── VideoUpload.jsx ← Drag-drop upload + processing status
+  │           └── Recordings.jsx  ← List, download, delete recordings
+  │
+  └── training/                   ← Model Training Scripts
+      ├── train_model.py          ← Fine-tune SlowFast on custom dataset
+      ├── prepare_dataset.py      ← Prepare training data
+      └── requirements.txt
+
+
+================================================================================
+  API ENDPOINTS
+================================================================================
+
+  POST /api/analyze-frame/      ← Send 1 frame, get detections back
+  POST /api/live-session/       ← Start/stop recording session
+  POST /api/upload-video/       ← Upload MP4 for processing
+  GET  /api/recordings/         ← List all recordings
+  GET  /api/recordings/{id}/    ← Get recording details
+  DEL  /api/recordings/{id}/    ← Delete recording + files
+  GET  /api/recordings/{id}/download/     ← Download processed video
+  GET  /api/recordings/{id}/status_check/ ← Poll processing status
+  GET  /api/events/             ← List detection events
+  GET  /api/health/             ← System health check
+  GET  /api/stats/              ← System statistics
+
+================================================================================

@@ -1,0 +1,370 @@
+You want:
+
+✅ Real-time 24 FPS
+
+✅ React frontend
+
+✅ Django backend
+
+✅ Heavy activity model (Video Swin)
+
+✅ Human detection using YOLO (powerful version)
+
+✅ Timestamp on video
+
+✅ Bounding boxes in live display
+
+✅ Same bounding boxes + timestamp saved in stored MP4
+
+✅ CCTV video stored in backend storage
+
+✅ Clean FINAL SRS
+
+Done. Below is your Final Professional SRS (v3.0).
+
+📘 SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+Project Title
+
+Real-Time AI-Based Suspicious Activity Detection and Human Monitoring System Using CCTV Surveillance
+
+1️⃣ Introduction
+1.1 Purpose
+
+The purpose of this system is to design and implement a real-time intelligent CCTV surveillance system that:
+
+Detects human presence
+
+Classifies activity as Normal or Suspicious
+
+Displays bounding boxes in real time
+
+Stores processed CCTV footage with timestamps and annotations
+
+Logs suspicious events for review
+
+2️⃣ System Overview
+
+The system performs:
+
+📡 Real-time CCTV monitoring at 24 FPS
+
+👤 Human detection using YOLO
+
+🧠 Activity classification using Video Swin Transformer
+
+🟢 Green box for normal activity
+
+🔴 Red box for suspicious activity
+
+🕒 Timestamp overlay on video
+
+💾 Storage of processed video (MP4 format)
+
+📊 Logging of detection events
+
+3️⃣ Technologies Used
+🔹 Frontend
+
+React.js
+
+HTML5 Video API
+
+Canvas API (bounding box drawing)
+
+Axios (API calls)
+
+🔹 Backend
+
+Django
+
+Django REST Framework
+
+Gunicorn
+
+django-cors-headers
+
+🔹 AI Models
+1️⃣ Human Detection Model
+
+YOLOv8x (Ultralytics YOLO)
+
+Reason for selection:
+
+High detection accuracy
+
+Real-time performance
+
+Strong human detection capability
+
+Optimized for GPU inference
+
+Used for:
+
+Detecting humans in each frame
+
+Drawing bounding boxes around detected persons
+
+2️⃣ Activity Classification Model
+
+Video Swin Transformer (Base or Small)
+
+Used for:
+
+16-frame sliding window analysis
+
+Binary classification:
+
+Normal
+
+Suspicious
+
+Framework:
+
+PyTorch
+
+CUDA acceleration
+
+🔹 Video Processing
+
+OpenCV
+
+FFmpeg (optional encoding)
+
+NumPy
+
+🔹 Training Platform
+
+Kaggle T4 x2 GPU
+
+🔹 Deployment
+
+Backend: Render (Free tier)
+
+Frontend: Localhost / Vercel
+
+Storage: Cloud file storage (local media folder or S3-compatible storage)
+
+4️⃣ System Architecture
+CCTV Camera
+      ↓
+React Frontend (24 FPS Capture)
+      ↓
+Django REST API
+      ↓
+YOLOv8x → Human Detection
+      ↓
+Video Swin → Activity Classification
+      ↓
+Bounding Box + Timestamp Overlay
+      ↓
+Return Prediction to Frontend
+      ↓
+Store Processed MP4 Video
+      ↓
+Log Event in Database
+
+5️⃣ Functional Requirements
+FR1 – Real-Time CCTV Monitoring
+
+System shall process video at 24 FPS.
+
+Frames shall be buffered in sliding window of 16 frames.
+
+Processing delay ≤ 1.5 seconds.
+
+FR2 – Human Detection
+
+System shall detect humans in video frames using YOLOv8x.
+
+Bounding box coordinates shall be generated.
+
+Only detected human regions shall be analyzed for activity.
+
+FR3 – Activity Classification
+
+System shall classify detected human activity as:
+
+Normal
+
+Suspicious
+
+FR4 – Visual Display Logic
+
+If classification result is:
+
+Normal → 🟢 Green bounding box
+
+Suspicious → 🔴 Red bounding box
+
+Bounding box shall include:
+
+Confidence score
+
+Label
+
+Timestamp
+
+Example display:
+
+[SUSPICIOUS | 0.94 | 14:32:10]
+
+FR5 – Timestamp Overlay
+
+System shall overlay current timestamp on each frame.
+
+Timestamp format: HH:MM:SS
+
+Timestamp shall be visible in both live display and stored video.
+
+FR6 – Video Storage
+
+Processed CCTV video shall be stored in MP4 format.
+
+Stored video shall include:
+
+Bounding boxes
+
+Labels
+
+Confidence score
+
+Timestamp overlay
+
+Stored video shall be accessible for later review.
+
+FR7 – Alert Logging
+
+System shall store in database:
+
+Timestamp
+
+Activity label
+
+Confidence score
+
+Video file path
+
+Duration of suspicious activity
+
+FR8 – Video Upload Mode
+
+User can upload MP4 file.
+
+System processes file and returns annotated video.
+
+Annotated version shall be stored.
+
+6️⃣ Non-Functional Requirements
+Performance
+
+24 FPS real-time processing
+
+Max detection delay: 1.5 seconds
+
+API response < 500 ms
+
+Accuracy
+
+YOLOv8x detection accuracy ≥ 95% (human detection)
+
+Activity classification accuracy ≥ 90%
+
+Scalability
+
+Backend shall support multiple users.
+
+Model shall remain loaded in memory to reduce inference latency.
+
+Reliability
+
+System uptime ≥ 95%
+
+Stored videos shall not be corrupted.
+
+7️⃣ Data Storage Design
+Database Fields
+Field	Type
+id	Integer
+timestamp	DateTime
+label	String
+confidence	Float
+video_path	String
+duration	Float
+Storage Structure
+media/
+   ├── live_recordings/
+   ├── uploaded_videos/
+   ├── suspicious_clips/
+
+8️⃣ Real-Time Processing Workflow
+
+Capture frame at 24 FPS.
+
+Apply YOLOv8x to detect humans.
+
+Collect 16-frame sliding window.
+
+Pass frames to Video Swin.
+
+Get classification result.
+
+Draw bounding box:
+
+Green if normal
+
+Red if suspicious
+
+Overlay timestamp.
+
+Display frame on frontend.
+
+Save annotated frame to output MP4.
+
+If suspicious:
+
+Log event in database.
+
+9️⃣ Model Justification
+Why YOLOv8x?
+
+State-of-the-art object detection
+
+Real-time capable
+
+Strong human detection performance
+
+Why Video Swin?
+
+Transformer-based temporal modeling
+
+High accuracy for action recognition
+
+Strong performance on surveillance datasets
+
+🔟 Future Enhancements
+
+Multi-class suspicious categories
+
+SMS / Email alert integration
+
+Audio detection integration
+
+Face recognition module
+
+Edge device deployment (Jetson)
+
+🏁 FINAL PROJECT STACK SUMMARY
+Layer	Technology
+Frontend	React
+Backend	Django REST
+Human Detection	YOLOv8x
+Activity Classification	Video Swin
+Training	Kaggle GPU
+Deployment	Render
+Video Processing	OpenCV
+Storage	Cloud / Local media
+🔥 This Is Now A Complete Professional Surveillance System
+
+Not a demo.
+Not a half project.
+A proper AI-based CCTV system.
