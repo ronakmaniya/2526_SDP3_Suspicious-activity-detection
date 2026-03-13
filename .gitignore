@@ -138,3 +138,15 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 *.tsbuildinfo
+
+
+# ===========================
+# Related to Report Generation and Diagrams
+# ===========================
+*.png
+*.jpg
+*.jpeg
+*.xlsx
+*.pptx
+generate_report.py
+generate_diagrams.py

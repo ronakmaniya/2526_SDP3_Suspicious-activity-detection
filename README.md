@@ -505,7 +505,7 @@ cp trained_model.pth "suspicious activity detection/backend/ai_models/"
 
 ## 📝 License
 
-This project is developed for **educational and research purposes** as part of the **Software Development Project (SDP)** coursework (Group 3) at **Dharmsinh Desai University**, Faculty of Technology, B.Tech in Computer Engineering (6th Semester).
+This project is developed for **educational and research purposes** as part of the **System Design Practice (SDP)** coursework (Group 3) at **Dharmsinh Desai University**, Faculty of Technology, B.Tech in Computer Engineering (6th Semester).
 
 ---
 
