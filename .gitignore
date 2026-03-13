@@ -150,3 +150,5 @@ htmlcov/
 *.pptx
 generate_report.py
 generate_diagrams.py
+commit_history.pdf
+commit_history.txt
